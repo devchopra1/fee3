@@ -9,7 +9,10 @@ export const REDIRECT_URI = "https://moodplaylist13.netlify.app/";
 // --- CONFIGURATION ---
 // !! REPLACE with your actual Client ID !!
 // Scopes needed for: reading user info, creating public/private playlists, adding songs
+// src/spotifyAuth.js
 export const SCOPES = "user-read-private playlist-modify-public playlist-modify-private"; 
+// You must have `playlist-modify-public` or `playlist-modify-private` 
+// to create and add tracks to a playlist.
 
 const AUTH_URL = "https://accounts.spotify.com/authorize";
 const TOKEN_URL = "https://accounts.spotify.com/api/token";
