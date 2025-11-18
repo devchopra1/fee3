@@ -2,7 +2,7 @@
 
 // --- CONFIGURATION ---
 export const CLIENT_ID = "df15f24ccf514ad8920d69105c44b84e"; // <-- REPLACE THIS!
-export const REDIRECT_URI = "http://192.168.144.109:3000"; 
+export const REDIRECT_URI = "https://moodplaylist13.netlify.app/"; 
 // ... (rest of the secure PKCE helper functions and handleSpotifyLogin/exchangeCodeForToken)
 // src/spotifyAuth.js
 
