@@ -11,6 +11,7 @@ const TOKEN_URL = "https://accounts.spotify.com/api/token";
 
 // --- PKCE HELPER FUNCTIONS ---
 const generateRandomString = (length) => {
+    // Generate a high-entropy string suitable for PKCE verifier (Source 1.1)
     const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     const values = window.crypto.getRandomValues(new Uint8Array(length));
     return values.reduce((acc, x) => acc + possible[x % possible.length], "");
@@ -23,6 +24,7 @@ const sha256 = async (plain) => {
 }
 
 const base64urlencode = (input) => {
+    // URL-safe base64 encoding (Source 1.1)
     return btoa(String.fromCharCode(...new Uint8Array(input)))
         .replace(/=/g, '')
         .replace(/\+/g, '-')
@@ -32,7 +34,7 @@ const base64urlencode = (input) => {
 // --- AUTH FLOW FUNCTIONS ---
 
 /**
- * Initiates the Spotify login redirect.
+ * Initiates the Spotify login redirect using Authorization Code with PKCE (Source 1.1, 1.2).
  */
 export async function handleSpotifyLogin() {
     const codeVerifier = generateRandomString(128);
@@ -57,13 +59,13 @@ export async function handleSpotifyLogin() {
 }
 
 /**
- * Exchanges the authorization code for an Access Token.
+ * Exchanges the authorization code for an Access Token and Refresh Token (Source 1.1).
  */
 export async function exchangeCodeForToken(code) {
     const codeVerifier = localStorage.getItem('code_verifier');
 
     if (!codeVerifier) {
-        throw new Error("Code Verifier missing. Please clear cache and try again.");
+        throw new Error("PKCE Verifier missing. Cannot complete login.");
     }
 
     try {
@@ -86,9 +88,9 @@ export async function exchangeCodeForToken(code) {
 
         const data = await response.json();
         
+        // Store tokens and calculate expiry time (Source 1.1)
         localStorage.setItem('access_token', data.access_token);
         localStorage.setItem('refresh_token', data.refresh_token);
-        // Expiry time is set to current time + expires_in seconds * 1000ms
         localStorage.setItem('token_expiry', Date.now() + (data.expires_in * 1000));
         
         localStorage.removeItem('code_verifier'); 
@@ -97,20 +99,19 @@ export async function exchangeCodeForToken(code) {
 
     } catch (error) {
         console.error("Token exchange failed:", error);
-        localStorage.clear(); // Clear all state on critical failure
+        localStorage.clear(); 
         throw error;
     }
 }
 
 /**
- * Uses the saved refresh_token to get a new access_token.
+ * Uses the refresh_token to get a new access_token without user interaction (Source 1.1, 1.4).
  */
 export async function refreshAccessToken() {
     const refreshToken = localStorage.getItem('refresh_token');
 
     if (!refreshToken) {
-        // If no refresh token exists, force a full re-login
-        throw new Error("No refresh token. User needs to re-authorize.");
+        throw new Error("No refresh token. Full re-authorization needed.");
     }
 
     try {
@@ -125,16 +126,14 @@ export async function refreshAccessToken() {
         });
 
         if (!response.ok) {
-             // 400 or 401 usually means token is permanently expired/revoked
              throw new Error(`Refresh failed with status ${response.status}`);
         }
 
         const data = await response.json();
 
-        // Update stored tokens with new values
         localStorage.setItem('access_token', data.access_token);
         if (data.refresh_token) {
-            localStorage.setItem('refresh_token', data.refresh_token); // Update if Spotify provides a new one
+            localStorage.setItem('refresh_token', data.refresh_token); 
         }
         localStorage.setItem('token_expiry', Date.now() + (data.expires_in * 1000));
         
@@ -142,7 +141,6 @@ export async function refreshAccessToken() {
 
     } catch (error) {
         console.error("Token refresh failed:", error);
-        // On refresh failure, clear everything to force clean re-login
         localStorage.clear(); 
         throw error; 
     }

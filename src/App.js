@@ -7,7 +7,6 @@ import PlaylistDisplay from './PlaylistDisplay';
 import './App.css'; 
 
 function App() {
-  // Check if token exists in localStorage on mount
   const [accessToken, setAccessToken] = useState(localStorage.getItem('access_token'));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -19,7 +18,6 @@ function App() {
 
     if (code && !accessToken) {
       setLoading(true);
-      // Immediately clean the URL to prevent double processing
       window.history.pushState({}, null, "/"); 
 
       exchangeCodeForToken(code)
@@ -29,7 +27,8 @@ function App() {
         })
         .catch(err => {
           console.error("Login failed:", err);
-          setError("Login failed. Check console for details.");
+          // Display the error thrown by the PKCE exchange
+          setError(err.message || "Login failed. Check console for details.");
           setLoading(false);
         });
     }
@@ -38,7 +37,7 @@ function App() {
   // Function to force a full re-login by clearing state
   const handleTryLoginAgain = () => {
       localStorage.clear();
-      window.location.href = "/"; // Force a full redirect and restart
+      window.location.href = "/";
   };
 
 
@@ -56,7 +55,7 @@ function App() {
         <div className="app-container">
             <h2>Error</h2>
             <p className="error-message">{error}</p>
-            <button onClick={handleTryLoginAgain} className="login-screen button">Try Login Again</button>
+            <button onClick={handleTryLoginAgain} className="generate-button">Try Login Again</button>
         </div>
     );
   }
