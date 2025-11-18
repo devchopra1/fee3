@@ -2,12 +2,9 @@
 
 import { refreshAccessToken, clearAllTokens } from './spotifyAuth'; 
 
-// 🚨 CRITICAL FIX: The CORRECT Spotify Web API Base URL (v1)
+// 🚨 CORRECT REAL API URL
 const API_BASE_URL = "https://api.spotify.com/v1"; 
 
-/**
- * Maps a mood to Spotify Audio Feature targets (0.0 to 1.0).
- */
 const moodMap = {
     'excited': { target_valence: 0.85, target_energy: 0.9, target_danceability: 0.7, min_tempo: 120 },
     'chill': { target_valence: 0.7, target_energy: 0.4, target_danceability: 0.5, max_tempo: 110 },
@@ -15,20 +12,16 @@ const moodMap = {
     'pumped': { target_valence: 0.5, target_energy: 0.95, target_tempo: 140, min_danceability: 0.6 },
 };
 
-/**
- * Generic API fetch wrapper that handles token expiry, refresh, and error codes.
- */
 async function spotifyFetch(url, token, options = {}, retries = 0) {
     const expiry = localStorage.getItem('token_expiry');
     let currentToken = token;
 
-    // 1. Check for Token Expiry before making the call
     if (expiry && Date.now() > parseInt(expiry) - 5000) {
         try {
             currentToken = await refreshAccessToken();
         } catch (e) {
             clearAllTokens();
-            throw new Error("Session expired. Please log in again to renew permissions.");
+            throw new Error("Session expired. Please log in again.");
         }
     }
 
@@ -45,14 +38,11 @@ async function spotifyFetch(url, token, options = {}, retries = 0) {
         headers: { ...defaultOptions.headers, ...options.headers }
     };
 
-    // Concatenate the correct base URL with the endpoint path
     const response = await fetch(`${API_BASE_URL}${url}`, finalOptions);
 
-    // 2. Handle 401 Unauthorized (token just expired)
     if (response.status === 401 && retries === 0) {
         try {
             const newToken = await refreshAccessToken();
-            // Retry the original call with the new token
             return spotifyFetch(url, newToken, options, 1); 
         } catch (e) {
             clearAllTokens();
@@ -60,24 +50,20 @@ async function spotifyFetch(url, token, options = {}, retries = 0) {
         }
     }
     
-    // 3. Handle 403 Forbidden (Missing Scopes)
     if (response.status === 403) {
         clearAllTokens();
-        throw new Error("Permission Denied (403). You must log in again and agree to **all** permissions to create playlists.");
+        throw new Error("Permission Denied (403). You must log in again and agree to **all** permissions.");
     }
 
     if (!response.ok) {
-        // Log error detail for advanced debugging
         const errorDetail = await response.text();
         console.error(`Spotify API call failed: ${response.status} for ${url}`, errorDetail);
         throw new Error(`Spotify API Error: ${response.statusText}. Code: ${response.status}`);
     }
 
     if (response.status === 204) return {}; 
-    
     return response.json();
 }
-
 
 export async function getCurrentUserId(token) {
     const userProfile = await spotifyFetch('/me', token);
@@ -135,9 +121,6 @@ export async function addTracksToPlaylist(token, playlistId, trackUris) {
     });
 }
 
-/**
- * Orchestrates the full playlist creation flow.
- */
 export async function generatePlaylist(token, mood) {
     const userId = await getCurrentUserId(token);
     const trackUris = await getRecommendedTracks(token, mood);

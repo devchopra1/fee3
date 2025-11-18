@@ -5,12 +5,11 @@ export const CLIENT_ID = "df15f24ccf514ad8920d69105c44b84e"; // <-- REPLACE THIS
 export const REDIRECT_URI = "https://moodplaylist13.netlify.app/"; 
 export const SCOPES = "user-read-private playlist-modify-public playlist-modify-private"; 
 
+// 🚨 CORRECT REAL URLs
 const AUTH_URL = "https://accounts.spotify.com/authorize";
 const TOKEN_URL = "https://accounts.spotify.com/api/token";
 
-
-// --- AUTH HELPER FUNCTIONS ---
-
+// --- PKCE HELPER FUNCTIONS ---
 const generateRandomString = (length) => {
     const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     const values = window.crypto.getRandomValues(new Uint8Array(length));
@@ -36,11 +35,9 @@ export function clearAllTokens() {
     localStorage.removeItem('code_verifier');
 }
 
-
 // --- AUTH FLOW FUNCTIONS ---
 
 export async function handleSpotifyLogin() {
-    // Clear any previous session data before starting a new flow
     clearAllTokens(); 
     
     const codeVerifier = generateRandomString(128);
@@ -95,7 +92,6 @@ export async function exchangeCodeForToken(code) {
         localStorage.setItem('access_token', data.access_token);
         localStorage.setItem('refresh_token', data.refresh_token);
         localStorage.setItem('token_expiry', Date.now() + (data.expires_in * 1000));
-        
         localStorage.removeItem('code_verifier'); 
         
         return data.access_token;
