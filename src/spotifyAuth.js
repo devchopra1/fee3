@@ -11,32 +11,41 @@ const TOKEN_URL = "https://accounts.spotify.com/api/token";
 
 // --- PKCE HELPER FUNCTIONS ---
 const generateRandomString = (length) => {
-    // Generate a high-entropy string suitable for PKCE verifier (Source 1.1)
     const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     const values = window.crypto.getRandomValues(new Uint8Array(length));
     return values.reduce((acc, x) => acc + possible[x % possible.length], "");
 }
-
 const sha256 = async (plain) => {
     const encoder = new TextEncoder();
     const data = encoder.encode(plain);
     return window.crypto.subtle.digest('SHA-256', data);
 }
-
 const base64urlencode = (input) => {
-    // URL-safe base64 encoding (Source 1.1)
     return btoa(String.fromCharCode(...new Uint8Array(input)))
         .replace(/=/g, '')
         .replace(/\+/g, '-')
         .replace(/\//g, '_');
 }
 
+// --- LOGOUT HELPER ---
+export function clearAllTokens() {
+    localStorage.removeItem('access_token');
+    localStorage.removeItem('refresh_token');
+    localStorage.removeItem('token_expiry');
+    localStorage.removeItem('code_verifier');
+    // Note: We don't want to clear ALL localStorage, just these keys
+}
+
+
 // --- AUTH FLOW FUNCTIONS ---
 
 /**
- * Initiates the Spotify login redirect using Authorization Code with PKCE (Source 1.1, 1.2).
+ * Initiates the Spotify login redirect.
  */
 export async function handleSpotifyLogin() {
+    // Clear any previous session data before starting a new flow
+    clearAllTokens(); 
+    
     const codeVerifier = generateRandomString(128);
     localStorage.setItem('code_verifier', codeVerifier);
 
@@ -59,13 +68,15 @@ export async function handleSpotifyLogin() {
 }
 
 /**
- * Exchanges the authorization code for an Access Token and Refresh Token (Source 1.1).
+ * Exchanges the authorization code for an Access Token and Refresh Token.
  */
 export async function exchangeCodeForToken(code) {
     const codeVerifier = localStorage.getItem('code_verifier');
 
     if (!codeVerifier) {
-        throw new Error("PKCE Verifier missing. Cannot complete login.");
+        // If code verifier is missing, try logging in again
+        clearAllTokens();
+        throw new Error("PKCE Verifier missing. Try logging in again.");
     }
 
     try {
@@ -88,7 +99,6 @@ export async function exchangeCodeForToken(code) {
 
         const data = await response.json();
         
-        // Store tokens and calculate expiry time (Source 1.1)
         localStorage.setItem('access_token', data.access_token);
         localStorage.setItem('refresh_token', data.refresh_token);
         localStorage.setItem('token_expiry', Date.now() + (data.expires_in * 1000));
@@ -99,18 +109,19 @@ export async function exchangeCodeForToken(code) {
 
     } catch (error) {
         console.error("Token exchange failed:", error);
-        localStorage.clear(); 
+        clearAllTokens(); 
         throw error;
     }
 }
 
 /**
- * Uses the refresh_token to get a new access_token without user interaction (Source 1.1, 1.4).
+ * Uses the refresh_token to get a new access_token without user interaction.
  */
 export async function refreshAccessToken() {
     const refreshToken = localStorage.getItem('refresh_token');
 
     if (!refreshToken) {
+        clearAllTokens();
         throw new Error("No refresh token. Full re-authorization needed.");
     }
 
@@ -126,7 +137,9 @@ export async function refreshAccessToken() {
         });
 
         if (!response.ok) {
-             throw new Error(`Refresh failed with status ${response.status}`);
+             // If the refresh token itself is invalid, clear storage
+             clearAllTokens();
+             throw new Error(`Refresh failed with status ${response.status}. Full login required.`);
         }
 
         const data = await response.json();
@@ -141,7 +154,7 @@ export async function refreshAccessToken() {
 
     } catch (error) {
         console.error("Token refresh failed:", error);
-        localStorage.clear(); 
+        clearAllTokens(); 
         throw error; 
     }
 }
