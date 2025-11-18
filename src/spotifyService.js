@@ -2,10 +2,11 @@
 
 import { refreshAccessToken, clearAllTokens } from './spotifyAuth'; 
 
-const API_BASE_URL = "https://api.spotify.com/v1";
+// 🚨 CRITICAL FIX: The CORRECT Spotify Web API Base URL (v1)
+const API_BASE_URL = "https://api.spotify.com/v1"; 
 
 /**
- * Maps a mood to Spotify Audio Feature targets.
+ * Maps a mood to Spotify Audio Feature targets (0.0 to 1.0).
  */
 const moodMap = {
     'excited': { target_valence: 0.85, target_energy: 0.9, target_danceability: 0.7, min_tempo: 120 },
@@ -15,13 +16,13 @@ const moodMap = {
 };
 
 /**
- * Generic API fetch wrapper that handles token expiry and retries.
+ * Generic API fetch wrapper that handles token expiry, refresh, and error codes.
  */
 async function spotifyFetch(url, token, options = {}, retries = 0) {
     const expiry = localStorage.getItem('token_expiry');
     let currentToken = token;
 
-    // 1. Token Expiry Check
+    // 1. Check for Token Expiry before making the call
     if (expiry && Date.now() > parseInt(expiry) - 5000) {
         try {
             currentToken = await refreshAccessToken();
@@ -44,12 +45,14 @@ async function spotifyFetch(url, token, options = {}, retries = 0) {
         headers: { ...defaultOptions.headers, ...options.headers }
     };
 
+    // Concatenate the correct base URL with the endpoint path
     const response = await fetch(`${API_BASE_URL}${url}`, finalOptions);
 
-    // 2. Handle 401 Unauthorized errors (token just expired)
+    // 2. Handle 401 Unauthorized (token just expired)
     if (response.status === 401 && retries === 0) {
         try {
             const newToken = await refreshAccessToken();
+            // Retry the original call with the new token
             return spotifyFetch(url, newToken, options, 1); 
         } catch (e) {
             clearAllTokens();
@@ -64,6 +67,7 @@ async function spotifyFetch(url, token, options = {}, retries = 0) {
     }
 
     if (!response.ok) {
+        // Log error detail for advanced debugging
         const errorDetail = await response.text();
         console.error(`Spotify API call failed: ${response.status} for ${url}`, errorDetail);
         throw new Error(`Spotify API Error: ${response.statusText}. Code: ${response.status}`);
@@ -81,7 +85,7 @@ export async function getCurrentUserId(token) {
 }
 
 export async function getRecommendedTracks(token, mood) {
-    const targets = moodMap[mood.toLowerCase()]; // targets is used here, resolving warning
+    const targets = moodMap[mood.toLowerCase()];
 
     if (!targets) {
         throw new Error(`Invalid mood: ${mood}`);
@@ -132,19 +136,12 @@ export async function addTracksToPlaylist(token, playlistId, trackUris) {
 }
 
 /**
- * Orchestrates the full playlist creation flow. (Final ESLint fix applied here)
+ * Orchestrates the full playlist creation flow.
  */
 export async function generatePlaylist(token, mood) {
-    // userId is used here
     const userId = await getCurrentUserId(token);
-    
-    // trackUris is used here
     const trackUris = await getRecommendedTracks(token, mood);
-    
-    // userId is used here
     const { id: playlistId, url: playlistUrl } = await createNewPlaylist(token, userId, mood); 
-    
-    // trackUris is used here
     await addTracksToPlaylist(token, playlistId, trackUris);
     
     return {
