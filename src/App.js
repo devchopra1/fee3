@@ -7,32 +7,40 @@ import PlaylistDisplay from './PlaylistDisplay';
 import './App.css'; 
 
 function App() {
+  // Check if token exists in localStorage on mount
   const [accessToken, setAccessToken] = useState(localStorage.getItem('access_token'));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [playlistResult, setPlaylistResult] = useState(null); // State to hold the generated playlist info
+  const [playlistResult, setPlaylistResult] = useState(null);
 
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
     const code = urlParams.get('code');
 
-    // 1. If we have a code and no token, we need to exchange the code
     if (code && !accessToken) {
       setLoading(true);
+      // Immediately clean the URL to prevent double processing
+      window.history.pushState({}, null, "/"); 
+
       exchangeCodeForToken(code)
         .then(token => {
           setAccessToken(token);
           setLoading(false);
-          // Clean up the URL query parameter after successful exchange
-          window.history.pushState({}, null, "/"); 
         })
         .catch(err => {
           console.error("Login failed:", err);
-          setError("Login failed. Please clear your cache or try again.");
+          setError("Login failed. Check console for details.");
           setLoading(false);
         });
     }
   }, [accessToken]); 
+
+  // Function to force a full re-login by clearing state
+  const handleTryLoginAgain = () => {
+      localStorage.clear();
+      window.location.href = "/"; // Force a full redirect and restart
+  };
+
 
   if (loading) {
     return (
@@ -48,13 +56,12 @@ function App() {
         <div className="app-container">
             <h2>Error</h2>
             <p className="error-message">{error}</p>
-            <button onClick={() => window.location.reload()}>Try Login Again</button>
+            <button onClick={handleTryLoginAgain} className="login-screen button">Try Login Again</button>
         </div>
     );
   }
 
   if (!accessToken) {
-    // Show the login button if no token is present
     return (
       <div className="login-screen app-container">
         <h1>MoodPlayl.ist Generator</h1>
@@ -64,7 +71,6 @@ function App() {
     );
   }
 
-  // --- Main application content once logged in ---
   return (
     <div className="app-container">
       <h1>MoodPlayl.ist Generator</h1>

@@ -3,7 +3,6 @@
 import React, { useState } from 'react';
 import { generatePlaylist } from './spotifyService';
 
-// Note: Ensure these moods match the keys in moodMap in spotifyService.js
 const MOODS = ['excited', 'chill', 'sad', 'pumped'];
 
 const MoodSelector = ({ accessToken, setPlaylistResult }) => {
@@ -26,7 +25,8 @@ const MoodSelector = ({ accessToken, setPlaylistResult }) => {
             setPlaylistResult(result);
         } catch (err) {
             console.error("Playlist Generation Failed:", err);
-            setError(`Could not generate playlist: ${err.message}.`);
+            // Display the specific message from the thrown error
+            setError(`Could not generate playlist: ${err.message || "Unknown API error occurred"}.`); 
         } finally {
             setIsLoading(false);
         }

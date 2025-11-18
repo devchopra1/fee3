@@ -1,51 +1,76 @@
 // src/spotifyService.js
 
+import { refreshAccessToken } from './spotifyAuth';
+
 const API_BASE_URL = "https://api.spotify.com/v1";
 
 /**
  * Maps a simple mood string to Spotify Audio Feature targets (0.0 to 1.0)
  */
 const moodMap = {
-    // High Valence (Happy) & High Energy (Excited) - Fast tempo music
     'excited': { target_valence: 0.85, target_energy: 0.9, target_danceability: 0.7, min_tempo: 120 },
-    // Mid/High Valence & Low/Mid Energy (Uplifting but Relaxed) - Chill tempo
     'chill': { target_valence: 0.7, target_energy: 0.4, target_danceability: 0.5, max_tempo: 110 },
-    // Low Valence (Sad) & Low Energy (Melancholy) - Slow tempo, acoustic
     'sad': { target_valence: 0.2, target_energy: 0.3, target_danceability: 0.4, max_tempo: 90 },
-    // Mid Valence & High Energy (Aggressive, Workout) - Very fast tempo
     'pumped': { target_valence: 0.5, target_energy: 0.95, target_tempo: 140, min_danceability: 0.6 },
 };
 
-async function spotifyFetch(url, token, options = {}) {
+/**
+ * Generic API fetch wrapper that handles token expiry and retries.
+ */
+async function spotifyFetch(url, token, options = {}, retries = 0) {
+    const expiry = localStorage.getItem('token_expiry');
+    let currentToken = token;
+
+    // 1. Check if token is expired (allow 5 second buffer)
+    if (expiry && Date.now() > parseInt(expiry) - 5000) {
+        console.warn("Access Token expired or near expiry. Attempting refresh...");
+        try {
+            currentToken = await refreshAccessToken();
+        } catch (e) {
+            throw new Error("Authentication failed during refresh. Please log in again.");
+        }
+    }
+
+    // 2. Prepare headers with the current/refreshed token
     const defaultOptions = {
         method: 'GET',
         headers: {
-            'Authorization': `Bearer ${token}`,
+            'Authorization': `Bearer ${currentToken}`,
             'Content-Type': 'application/json',
         },
     };
     const finalOptions = {
         ...defaultOptions,
         ...options,
-        // Merging headers ensures we don't lose Auth token if custom headers are passed
-        headers: { ...defaultOptions.headers, ...options.headers } 
+        headers: { ...defaultOptions.headers, ...options.headers }
     };
 
     const response = await fetch(`${API_BASE_URL}${url}`, finalOptions);
 
-    if (!response.ok) {
-        // Log error details for debugging
-        console.error(`Spotify API call failed: ${response.status} for ${url}`, await response.text());
-        throw new Error(`Spotify API Error: ${response.statusText}`);
+    // 3. Handle Token-specific errors (401 Unauthorized) by retrying once
+    if (response.status === 401 && retries === 0) {
+        console.warn("401 Unauthorized. Token might have just expired. Retrying with refresh...");
+        try {
+            const newToken = await refreshAccessToken();
+            // Retry the original call with the new token
+            return spotifyFetch(url, newToken, options, 1); 
+        } catch (e) {
+            // If refresh failed, let the error propagate
+            throw new Error("Session expired. Please log in.");
+        }
     }
 
-    // Handle 204 No Content response (common for POST/PUT/DELETE requests)
+    if (!response.ok) {
+        console.error(`Spotify API call failed: ${response.status} for ${url}`, await response.text());
+        throw new Error(`Spotify API Error: ${response.statusText}. Code: ${response.status}`);
+    }
+
     if (response.status === 204) return {}; 
     
     return response.json();
 }
 
-// --- CORE PLAYLIST FUNCTIONS ---
+// --- CORE PLAYLIST FUNCTIONS (These remain unchanged, but now use the fixed spotifyFetch) ---
 
 export async function getCurrentUserId(token) {
     const userProfile = await spotifyFetch('/me', token);
@@ -59,12 +84,10 @@ export async function getRecommendedTracks(token, mood) {
         throw new Error(`Invalid mood: ${mood}`);
     }
 
-    // Build the query parameters for the recommendation endpoint
     const queryParams = new URLSearchParams({
-        limit: 25, // Get 25 songs
-        // Use a mix of popular genres as starting seeds
+        limit: 25, 
         seed_genres: 'pop,rock,edm,chill', 
-        ...targets, // Inject the mood-based audio features
+        ...targets,
     });
 
     const data = await spotifyFetch(`/recommendations?${queryParams.toString()}`, token);
@@ -73,7 +96,7 @@ export async function getRecommendedTracks(token, mood) {
         throw new Error("Spotify returned zero tracks for this mood. Try a different mood.");
     }
 
-    return data.tracks.map(track => track.uri); // Return an array of track URIs
+    return data.tracks.map(track => track.uri);
 }
 
 export async function createNewPlaylist(token, userId, mood) {
@@ -91,7 +114,6 @@ export async function createNewPlaylist(token, userId, mood) {
         body: JSON.stringify(body),
     });
 
-    // The playlist object contains the ID and the URL
     return { id: playlist.id, url: playlist.external_urls.spotify };
 }
 
@@ -100,17 +122,14 @@ export async function addTracksToPlaylist(token, playlistId, trackUris) {
         uris: trackUris,
     };
 
-    // This returns a 201 Created with a snapshot ID, but the content is often ignored
     await spotifyFetch(`/playlists/${playlistId}/tracks`, token, {
         method: 'POST',
         body: JSON.stringify(body),
     });
 }
 
-/**
- * Orchestrates the entire playlist creation process.
- */
 export async function generatePlaylist(token, mood) {
+    // The token passed here might be the original one, but spotifyFetch will refresh if needed
     const userId = await getCurrentUserId(token);
     const trackUris = await getRecommendedTracks(token, mood);
     const { id: playlistId, url: playlistUrl } = await createNewPlaylist(token, userId, mood);
