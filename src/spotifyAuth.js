@@ -5,11 +5,12 @@ export const CLIENT_ID = "df15f24ccf514ad8920d69105c44b84e"; // <-- REPLACE THIS
 export const REDIRECT_URI = "https://moodplaylist13.netlify.app/"; 
 export const SCOPES = "user-read-private playlist-modify-public playlist-modify-private"; 
 
-// 🚨 CORRECT REAL URLs
+// 🚨 FIX: THESE ARE THE REAL SPOTIFY URLS
 const AUTH_URL = "https://accounts.spotify.com/authorize";
 const TOKEN_URL = "https://accounts.spotify.com/api/token";
 
-// --- PKCE HELPER FUNCTIONS ---
+// ... (Keep the rest of the file exactly the same as before)
+
 const generateRandomString = (length) => {
     const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     const values = window.crypto.getRandomValues(new Uint8Array(length));
@@ -27,15 +28,12 @@ const base64urlencode = (input) => {
         .replace(/\//g, '_');
 }
 
-// --- LOGOUT HELPER ---
 export function clearAllTokens() {
     localStorage.removeItem('access_token');
     localStorage.removeItem('refresh_token');
     localStorage.removeItem('token_expiry');
     localStorage.removeItem('code_verifier');
 }
-
-// --- AUTH FLOW FUNCTIONS ---
 
 export async function handleSpotifyLogin() {
     clearAllTokens(); 
