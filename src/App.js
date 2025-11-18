@@ -27,15 +27,14 @@ function App() {
         })
         .catch(err => {
           console.error("Login failed:", err);
-          // Display the error thrown by the PKCE exchange
           setError(err.message || "Login failed. Check console for details.");
           setLoading(false);
         });
     }
   }, [accessToken]); 
 
-  // Function to force a full re-login by clearing state
   const handleTryLoginAgain = () => {
+      // Clear state and force restart of the application flow
       localStorage.clear();
       window.location.href = "/";
   };

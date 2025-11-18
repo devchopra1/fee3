@@ -9,7 +9,8 @@ const AUTH_URL = "https://accounts.spotify.com/authorize";
 const TOKEN_URL = "https://accounts.spotify.com/api/token";
 
 
-// --- PKCE HELPER FUNCTIONS ---
+// --- AUTH HELPER FUNCTIONS ---
+
 const generateRandomString = (length) => {
     const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     const values = window.crypto.getRandomValues(new Uint8Array(length));
@@ -33,15 +34,11 @@ export function clearAllTokens() {
     localStorage.removeItem('refresh_token');
     localStorage.removeItem('token_expiry');
     localStorage.removeItem('code_verifier');
-    // Note: We don't want to clear ALL localStorage, just these keys
 }
 
 
 // --- AUTH FLOW FUNCTIONS ---
 
-/**
- * Initiates the Spotify login redirect.
- */
 export async function handleSpotifyLogin() {
     // Clear any previous session data before starting a new flow
     clearAllTokens(); 
@@ -67,14 +64,10 @@ export async function handleSpotifyLogin() {
     window.location.href = authUrl.toString();
 }
 
-/**
- * Exchanges the authorization code for an Access Token and Refresh Token.
- */
 export async function exchangeCodeForToken(code) {
     const codeVerifier = localStorage.getItem('code_verifier');
 
     if (!codeVerifier) {
-        // If code verifier is missing, try logging in again
         clearAllTokens();
         throw new Error("PKCE Verifier missing. Try logging in again.");
     }
@@ -114,9 +107,6 @@ export async function exchangeCodeForToken(code) {
     }
 }
 
-/**
- * Uses the refresh_token to get a new access_token without user interaction.
- */
 export async function refreshAccessToken() {
     const refreshToken = localStorage.getItem('refresh_token');
 
@@ -137,7 +127,6 @@ export async function refreshAccessToken() {
         });
 
         if (!response.ok) {
-             // If the refresh token itself is invalid, clear storage
              clearAllTokens();
              throw new Error(`Refresh failed with status ${response.status}. Full login required.`);
         }
