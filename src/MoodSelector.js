@@ -60,5 +60,4 @@ const MoodSelector = ({ accessToken, setPlaylistResult }) => {
         </div>
     );
 };
-
 export default MoodSelector;

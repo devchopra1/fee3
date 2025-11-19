@@ -12,7 +12,6 @@ const moodMap = {
   sad:     { target_valence: 0.2,  target_energy: 0.3, target_danceability: 0.4, max_tempo: 90  },
   pumped:  { target_valence: 0.5,  target_energy: 0.95, target_danceability: 0.6, min_tempo: 140 },
 };
-
 async function spotifyFetch(url, token, options = {}, retries = 0) {
   let currentToken = token || getStoredAccessToken();
 

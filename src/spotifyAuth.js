@@ -172,13 +172,11 @@ export async function refreshAccessToken() {
       grant_type: "refresh_token",
       refresh_token: refreshToken,
     });
-
     const response = await fetch(TOKEN_URL, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: body.toString(),
     });
-
     if (!response.ok) {
       let errText;
       try {
