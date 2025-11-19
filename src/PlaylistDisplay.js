@@ -9,9 +9,11 @@ const PlaylistDisplay = ({ data }) => {
         <div className="playlist-display">
             <h3>✅ Success! Playlist Generated!</h3>
             <h4>{data.name}</h4>
+
             <p>
-                A new playlist with **{data.tracks} tracks** has been created in your Spotify account.
+                A new playlist with <strong>{data.tracks}</strong> tracks has been created in your Spotify account.
             </p>
+
             <a 
                 href={data.url} 
                 target="_blank" 
@@ -20,7 +22,10 @@ const PlaylistDisplay = ({ data }) => {
             >
                 Open Playlist on Spotify
             </a>
-            <p className="note">Click the link above to view your personalized mood playlist!</p>
+
+            <p className="note">
+                Click the link above to view your personalized mood playlist!
+            </p>
         </div>
     );
 };

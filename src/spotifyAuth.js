@@ -4,13 +4,9 @@
 export const CLIENT_ID = "df15f24ccf514ad8920d69105c44b84e"; // replace if needed
 export const REDIRECT_URI = "https://moodplaylist13.netlify.app/";
 export const SCOPES = "user-read-private playlist-modify-public playlist-modify-private";
-
 // Spotify endpoints
 const AUTH_URL = "https://accounts.spotify.com/authorize";
 const TOKEN_URL = "https://accounts.spotify.com/api/token";
-
-
-
 
 /* ----------------------
    Crypto & helper funcs
