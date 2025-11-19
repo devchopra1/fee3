@@ -1,9 +1,16 @@
 // src/App.js
 
 import React, { useState, useEffect } from 'react';
-import { handleSpotifyLogin, exchangeCodeForToken, getStoredAccessToken, clearAllTokens } from './spotifyAuth';
+import {
+  handleSpotifyLogin,
+  exchangeCodeForToken,
+  getStoredAccessToken,
+  clearAllTokens
+} from './spotifyAuth';
+
 import MoodSelector from './MoodSelector';
 import PlaylistDisplay from './PlaylistDisplay';
+import DebugPanel from './DebugPanel'; // OPTIONAL: Only if you added DebugPanel.js
 import './App.css';
 
 function App() {
@@ -12,39 +19,53 @@ function App() {
   const [error, setError] = useState(null);
   const [playlistResult, setPlaylistResult] = useState(null);
 
+  // Debug logs (optional)
+  const [debugLogs, setDebugLogs] = useState([]);
+  const pushDebug = (logEntry) => {
+    setDebugLogs(prev => [...prev.slice(-19), logEntry]); // keep last 20
+  };
+
+  // Handle redirect from Spotify OAuth (PKCE code)
   useEffect(() => {
-    (async () => {
+    const run = async () => {
       const params = new URLSearchParams(window.location.search);
       const code = params.get('code');
       const state = params.get('state');
 
-      if (code && !accessToken) {
-        setLoading(true);
+      // Already logged in → nothing to do
+      if (!code || accessToken) return;
+
+      setLoading(true);
+
+      try {
+        const token = await exchangeCodeForToken(code, state);
+        setAccessToken(token || getStoredAccessToken());
+        setError(null);
+      } catch (err) {
+        console.error('Login failed:', err);
+        setError(err?.message || 'Login failed.');
+        clearAllTokens();
+        setAccessToken(null);
+      } finally {
+        setLoading(false);
+
+        // Clean URL (remove ?code=...&state=...)
         try {
-          const token = await exchangeCodeForToken(code, state);
-          setAccessToken(token || getStoredAccessToken());
-          setError(null);
-        } catch (err) {
-          console.error('Login failed:', err);
-          setError(err?.message || 'Login failed');
-          clearAllTokens();
-          setAccessToken(null);
-        } finally {
-          setLoading(false);
-          try { window.history.replaceState({}, document.title, window.location.pathname); } catch {}
-        }
-      } else {
-        const stored = getStoredAccessToken();
-        if (stored && !accessToken) setAccessToken(stored);
+          window.history.replaceState({}, document.title, window.location.pathname);
+        } catch (_) { }
       }
-    })();
-    // run only on mount
+    };
+
+    run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // User pressed "Try Login Again"
   const handleTryLoginAgain = () => {
     clearAllTokens();
-    handleSpotifyLogin(true);
+    setError(null);
+    setAccessToken(null);
+    handleSpotifyLogin(true); // force Spotify consent popup
   };
 
   const handleLogout = () => {
@@ -56,34 +77,64 @@ function App() {
 
   return (
     <div className="app-container">
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <header className="header">
         <h1>MoodPlayl.ist Generator</h1>
-        {accessToken && <button onClick={handleLogout} className="generate-button outline">Logout</button>}
+
+        {accessToken && (
+          <button
+            className="generate-button outline"
+            onClick={handleLogout}
+          >Logout</button>
+        )}
       </header>
 
-      {loading ? (
-        <div className="app-container">
-          <h2>Loading… completing Spotify login</h2>
+      {/* Loading screen */}
+      {loading && (
+        <div className="center">
+          <h2>Loading…</h2>
+          <p>Completing Spotify login…</p>
         </div>
-      ) : error && !accessToken ? (
-        <div className="app-container">
+      )}
+
+      {/* Error screen (not logged in) */}
+      {!loading && error && !accessToken && (
+        <div className="center">
           <h2>Error</h2>
           <p className="error-message">{error}</p>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={handleTryLoginAgain} className="generate-button">Re-login with Spotify</button>
-            <button onClick={() => { clearAllTokens(); setError(null); }} className="generate-button outline">Clear & Retry</button>
-          </div>
+          <button onClick={handleTryLoginAgain} className="generate-button">
+            Re-Login with Spotify
+          </button>
         </div>
-      ) : !accessToken ? (
-        <div className="login-screen app-container">
-          <h2>Log in with Spotify to generate a mood playlist</h2>
-          <button onClick={() => handleSpotifyLogin(true)} className="generate-button">Log in with Spotify</button>
+      )}
+
+      {/* Login screen */}
+      {!loading && !error && !accessToken && (
+        <div className="center">
+          <h2>Log in with Spotify to generate playlists</h2>
+          <button
+            className="generate-button"
+            onClick={() => handleSpotifyLogin(true)}
+          >
+            Login with Spotify
+          </button>
         </div>
-      ) : (
-        <main style={{ marginTop: 20 }}>
-          <MoodSelector accessToken={accessToken} setPlaylistResult={setPlaylistResult} setError={setError} />
+      )}
+
+      {/* Main Screen */}
+      {!loading && accessToken && (
+        <>
+          <MoodSelector
+            accessToken={accessToken}
+            setPlaylistResult={setPlaylistResult}
+            setError={setError}
+            debugCallback={pushDebug}  // OPTIONAL
+          />
+
           <PlaylistDisplay data={playlistResult} />
-        </main>
+
+          {/* Debug panel (optional) */}
+          <DebugPanel logs={debugLogs} />
+        </>
       )}
     </div>
   );
