@@ -6,68 +6,48 @@ import { generatePlaylist } from './spotifyService';
 const MOODS = ['excited', 'chill', 'sad', 'pumped'];
 
 const MoodSelector = ({ accessToken, setPlaylistResult, setError }) => {
-    const [selectedMood, setSelectedMood] = useState(null);
-    const [isLoading, setIsLoading] = useState(false);
-    const [localError, setLocalError] = useState(null);
+  const [selectedMood, setSelectedMood] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [localError, setLocalError] = useState(null);
 
-    const handleGenerate = async () => {
-        if (!selectedMood) {
-            setLocalError("Please select a mood before generating.");
-            return;
-        }
+  const handleGenerate = async () => {
+    if (!selectedMood) { setLocalError("Please select a mood."); return; }
+    setIsLoading(true);
+    setLocalError(null);
+    setError && setError(null);
+    setPlaylistResult(null);
 
-        setIsLoading(true);
-        setLocalError(null);
-        setError && setError(null); 
-        setPlaylistResult(null);
+    try {
+      const res = await generatePlaylist(accessToken, selectedMood);
+      setPlaylistResult(res);
+    } catch (err) {
+      console.error('Could not generate playlist:', err);
+      const msg = err?.message || 'Unknown error';
+      setLocalError(msg);
+      setError && setError(msg);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
-        try {
-            const result = await generatePlaylist(accessToken, selectedMood);
-            setPlaylistResult(result);
-        } catch (err) {
-            console.error("Playlist Generation Failed:", err);
+  return (
+    <div className="mood-selector">
+      <h2>1. Select Your Mood</h2>
+      <div className="mood-buttons">
+        {MOODS.map(m => (
+          <button key={m} className={`mood-button ${selectedMood === m ? 'selected' : ''}`} onClick={() => { setSelectedMood(m); setLocalError(null); setError && setError(null); }} disabled={isLoading}>
+            {m.charAt(0).toUpperCase() + m.slice(1)}
+          </button>
+        ))}
+      </div>
 
-            const message = err?.message || "Unknown API error occurred.";
-            setLocalError(`Could not generate playlist: ${message}`);
-        } finally {
-            setIsLoading(false);
-        }
-    };
+      <button onClick={handleGenerate} className="generate-button" disabled={isLoading || !selectedMood}>
+        {isLoading ? 'Generating Playlist…' : '2. Generate Playlist'}
+      </button>
 
-    const handleSelectMood = (mood) => {
-        setSelectedMood(mood);
-        setLocalError(null);
-        setError && setError(null);
-    };
-
-    return (
-        <div className="mood-selector">
-            <h2>1. Select Your Current Mood</h2>
-
-            <div className="mood-buttons">
-                {MOODS.map(mood => (
-                    <button
-                        key={mood}
-                        className={`mood-button ${selectedMood === mood ? 'selected' : ''}`}
-                        onClick={() => handleSelectMood(mood)}
-                        disabled={isLoading}
-                    >
-                        {mood.charAt(0).toUpperCase() + mood.slice(1)}
-                    </button>
-                ))}
-            </div>
-
-            <button
-                className="generate-button"
-                onClick={handleGenerate}
-                disabled={isLoading || !selectedMood}
-            >
-                {isLoading ? 'Generating Playlist...' : '2. Generate Playlist'}
-            </button>
-
-            {localError && <p className="error-message">{localError}</p>}
-        </div>
-    );
+      {localError && <p className="error-message">{localError}</p>}
+    </div>
+  );
 };
 
 export default MoodSelector;
