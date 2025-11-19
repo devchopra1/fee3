@@ -2,7 +2,7 @@
 
 // --- CONFIGURATION ---
 export const CLIENT_ID = "df15f24ccf514ad8920d69105c44b84e"; // replace only if you have different client id
-export const REDIRECT_URI = "https://moodplaylist13.netlify.app/"; // must match Spotify Dashboard
+export const REDIRECT_URI = "https://moodplay22.netlify.app/"; // must match Spotify Dashboard
 export const SCOPES = "user-read-private playlist-modify-public playlist-modify-private";
 
 // Spotify endpoints
