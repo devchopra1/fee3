@@ -1,8 +1,11 @@
-// src/spotifyService.js  (DEBUG-ENABLED)
-// Replaces previous spotifyService.js — supports debugCallback to surface requests/responses
+// src/spotifyService.js
+// Defensive Spotify service wrapper — fixes URL-building issues that caused 404 on /recommendations
 
 import { refreshAccessToken, clearAllTokens, getStoredAccessToken } from './spotifyAuth';
-const API_BASE_URL = "https://api.spotify.com/v1";
+
+let API_BASE_URL = "https://api.spotify.com/v1";
+// normalize API_BASE_URL (no trailing slash)
+API_BASE_URL = API_BASE_URL.replace(/\/+$/, '');
 
 const moodMap = {
   excited: { target_valence: 0.85, target_energy: 0.9, target_danceability: 0.7, min_tempo: 120 },
@@ -11,91 +14,111 @@ const moodMap = {
   pumped:  { target_valence: 0.5,  target_energy: 0.95, target_danceability: 0.6, min_tempo: 140 },
 };
 
-async function spotifyFetch(url, token, options = {}, retries = 0, debugCallback) {
-  const makeDebug = (stage, req, resp) => {
-    try { if (typeof debugCallback === 'function') debugCallback({ stage, request: req, response: resp }); } catch (e) { console.warn('debugCallback failed', e); }
-  };
+function buildFullUrl(url) {
+  if (!url) return API_BASE_URL;
 
-  let currentToken = token || getStoredAccessToken();
-  if (!currentToken) {
-    try { currentToken = await refreshAccessToken(); } catch (err) { clearAllTokens(); throw new Error("No access token. Please log in."); }
+  // If url already includes protocol, use it unchanged
+  if (/^https?:\/\//i.test(url)) return url;
+
+  // If url starts with api.spotify.com (no protocol), add https://
+  if (/^api\.spotify\.com/i.test(url)) {
+    return 'https://' + url.replace(/^\/+/, '');
   }
 
-  // refresh if near expiry
+  // If url starts with /, join with base
+  if (url.startsWith('/')) {
+    return API_BASE_URL + url;
+  }
+
+  // Otherwise assume it's a path like "recommendations?..." — ensure leading slash
+  return API_BASE_URL + '/' + url;
+}
+
+async function spotifyFetch(url, token, options = {}, retries = 0) {
+  let currentToken = token || getStoredAccessToken();
+
+  if (!currentToken) {
+    try {
+      currentToken = await refreshAccessToken();
+    } catch (err) {
+      clearAllTokens();
+      throw new Error('No access token available. Please log in.');
+    }
+  }
+
+  // refresh shortly before expiry if necessary
   const expiry = localStorage.getItem('token_expiry');
   if (expiry && Date.now() > parseInt(expiry, 10) - 5000) {
-    try { currentToken = await refreshAccessToken(); } catch (err) { clearAllTokens(); throw new Error("Session expired. Please log in again."); }
+    try {
+      currentToken = await refreshAccessToken();
+    } catch (err) {
+      clearAllTokens();
+      throw new Error('Session expired. Please log in again.');
+    }
   }
 
-  const fullUrl = `${API_BASE_URL}${url.startsWith('/') ? url : '/' + url}`;
-  const req = {
+  const fullUrl = buildFullUrl(url);
+  const finalOptions = {
     method: options.method || 'GET',
-    url: fullUrl,
-    body: options.body ?? null,
-    headers: { ...(options.headers || {}) }
+    headers: { 'Authorization': `Bearer ${currentToken}`, 'Content-Type': 'application/json', ...(options.headers || {}) },
+    body: options.body
   };
 
-  makeDebug('request:prepare', req, null);
+  // DEBUG: show the final URL so we can confirm it's correct
+  console.debug('[spotifyFetch] FINAL URL ->', fullUrl);
+
   let response;
   try {
-    response = await fetch(fullUrl, { method: req.method, headers: { Authorization: `Bearer ${currentToken}`, 'Content-Type': 'application/json', ...(options.headers || {}) }, body: req.body });
+    response = await fetch(fullUrl, finalOptions);
   } catch (networkErr) {
-    const resp = { status: null, statusText: String(networkErr), bodyText: null, bodyJson: null };
-    makeDebug('response:error', req, resp);
-    console.error('Network fetch failed', networkErr);
+    console.error('[spotifyFetch] Network error:', networkErr);
     throw new Error('Network error while contacting Spotify API.');
   }
 
-  // read response text
+  if (response.status === 401 && retries === 0) {
+    try {
+      const newToken = await refreshAccessToken();
+      return spotifyFetch(url, newToken, options, retries + 1);
+    } catch (e) {
+      clearAllTokens();
+      throw new Error('Session expired. Please log in again.');
+    }
+  }
+
+  if (response.status === 204) return {};
+
   let bodyText = null;
   let bodyJson = null;
   try {
     bodyText = await response.text();
     try { bodyJson = JSON.parse(bodyText); } catch (_) { bodyJson = null; }
   } catch (e) {
-    bodyText = null;
-    bodyJson = null;
+    /* ignore */
   }
-
-  const respObj = { status: response.status, statusText: response.statusText, bodyText, bodyJson };
-  makeDebug('response:received', req, respObj);
-
-  // 401 -> try refresh once
-  if (response.status === 401 && retries === 0) {
-    try {
-      const newToken = await refreshAccessToken();
-      return spotifyFetch(url, newToken, options, retries + 1, debugCallback);
-    } catch (e) {
-      clearAllTokens();
-      throw new Error("Session expired. Please log in again.");
-    }
-  }
-
-  if (response.status === 204) return {};
 
   if (!response.ok) {
-    // Surface helpful debug info
-    const msg = bodyJson?.error?.message || bodyText || response.statusText || `HTTP ${response.status}`;
-    // Provide the debug callback one more time with stage 'response:error-final'
-    makeDebug('response:error-final', req, respObj);
+    console.error(`[spotifyFetch] ERROR ${response.status} ${response.statusText} ->`, bodyJson || bodyText);
     if (response.status === 403) {
       clearAllTokens();
+      const msg = bodyJson?.error?.message || bodyText || 'Permission Denied (403)';
       throw new Error(`Spotify 403: ${msg}`);
-    } else if (response.status === 404) {
-      throw new Error(`Spotify 404: ${msg}`);
-    } else {
-      throw new Error(`Spotify API Error ${response.status}: ${msg}`);
     }
+    if (response.status === 404) {
+      const msg = bodyJson?.error?.message || bodyText || 'Not Found (404)';
+      throw new Error(`Spotify 404: ${msg}`);
+    }
+    const generic = bodyJson?.error?.message || bodyText || response.statusText;
+    throw new Error(`Spotify API Error ${response.status}: ${generic}`);
   }
 
   return bodyJson ?? (bodyText ? (() => { try { return JSON.parse(bodyText); } catch { return bodyText; } })() : {});
 }
 
-/* ---------- Public API with debugCallback param ---------- */
+/* ========== API ========== */
 
-export async function getCurrentUserId(token, debugCallback) {
-  const profile = await spotifyFetch('/me', token, {}, 0, debugCallback);
-  if (!profile || !profile.id) throw new Error('Unable to fetch user profile (no id in /me).');
+export async function getCurrentUserId(token) {
+  const profile = await spotifyFetch('/me', token);
+  if (!profile || !profile.id) throw new Error('Unable to fetch user profile.');
   return profile.id;
 }
 
@@ -111,41 +134,36 @@ function buildRecommendationParams(targets = {}, extra = {}) {
   return params;
 }
 
-export async function getRecommendedTracks(token, mood, debugCallback) {
+export async function getRecommendedTracks(token, mood) {
   if (!mood || typeof mood !== 'string') throw new Error('Mood required.');
   const targets = moodMap[mood.toLowerCase()];
   if (!targets) throw new Error(`Invalid mood: ${mood}`);
 
   const params = buildRecommendationParams(targets, { limit: 25 });
   const url = `/recommendations?${params.toString()}`;
-  const data = await spotifyFetch(url, token, {}, 0, debugCallback);
+  // Debug log before calling
+  console.debug('[getRecommendedTracks] calling ->', url);
+  const data = await spotifyFetch(url, token);
 
-  if (!data || !Array.isArray(data.tracks)) {
-    throw new Error('Recommendations response malformed.');
-  }
-  if (data.tracks.length === 0) throw new Error('No recommendation tracks returned.');
+  if (!data || !Array.isArray(data.tracks)) throw new Error('Recommendations response malformed.');
+  if (data.tracks.length === 0) throw new Error('No tracks returned from recommendations.');
 
   return data.tracks.map(t => t?.uri).filter(Boolean);
 }
 
-export async function createNewPlaylist(token, userId, mood, isPublic = false, debugCallback) {
-  // verify /me upfront
-  const me = await spotifyFetch('/me', token, {}, 0, debugCallback);
-  if (!me || !me.id) throw new Error('/me did not return user id.');
-
+export async function createNewPlaylist(token, userId, mood, isPublic = false) {
   const moodTitle = (typeof mood === 'string' && mood.length) ? mood.charAt(0).toUpperCase() + mood.slice(1) : 'Custom';
   const bodyObj = { name: `MoodPlayl.ist: ${moodTitle} Vibe`, description: 'Generated by MoodPlayl.ist', public: Boolean(isPublic) };
-
-  const playlist = await spotifyFetch('/me/playlists', token, { method: 'POST', body: JSON.stringify(bodyObj) }, 0, debugCallback);
-  if (!playlist || !playlist.id) throw new Error(`Playlist creation failed: ${JSON.stringify(playlist)}`);
-  return { id: playlist.id, url: playlist.external_urls?.spotify ?? null, raw: playlist };
+  const playlist = await spotifyFetch('/me/playlists', token, { method: 'POST', body: JSON.stringify(bodyObj) });
+  if (!playlist || !playlist.id) throw new Error('Failed to create playlist.');
+  return { id: playlist.id, url: playlist.external_urls?.spotify ?? null };
 }
 
-export async function addTracksToPlaylist(token, playlistId, trackUris, debugCallback) {
+export async function addTracksToPlaylist(token, playlistId, trackUris) {
   if (!playlistId) throw new Error('playlistId required.');
   if (!Array.isArray(trackUris) || trackUris.length === 0) return;
 
-  // convert URI -> id if needed
+  // convert spotify:playlist:... -> id
   let id = playlistId;
   if (typeof id === 'string' && id.startsWith('spotify:playlist:')) id = id.split(':').pop();
 
@@ -153,20 +171,15 @@ export async function addTracksToPlaylist(token, playlistId, trackUris, debugCal
   const chunkSize = 100;
   for (let i = 0; i < trackUris.length; i += chunkSize) {
     const chunk = trackUris.slice(i, i + chunkSize);
-    await spotifyFetch(`/playlists/${cleanedId}/tracks`, token, { method: 'POST', body: JSON.stringify({ uris: chunk }) }, 0, debugCallback);
+    await spotifyFetch(`/playlists/${cleanedId}/tracks`, token, { method: 'POST', body: JSON.stringify({ uris: chunk }) });
   }
 }
 
-export async function generatePlaylist(token, mood, makePublic = false, debugCallback) {
-  // validate token via /me and return debug info
-  const me = await spotifyFetch('/me', token, {}, 0, debugCallback);
-  if (!me || !me.id) throw new Error('Could not validate user with /me.');
-
-  const trackUris = await getRecommendedTracks(token, mood, debugCallback);
-  if (!Array.isArray(trackUris) || trackUris.length === 0) throw new Error('No recommended tracks found.');
-
-  const { id: playlistId, url: playlistUrl, raw } = await createNewPlaylist(token, me.id, mood, makePublic, debugCallback);
-  await addTracksToPlaylist(token, playlistId, trackUris, debugCallback);
-
-  return { name: `MoodPlayl.ist: ${mood.charAt(0).toUpperCase() + mood.slice(1)} Vibe`, url: playlistUrl, tracks: trackUris.length, playlistRaw: raw };
+export async function generatePlaylist(token, mood, makePublic = false) {
+  const me = await spotifyFetch('/me', token);
+  if (!me || !me.id) throw new Error('Unable to fetch user profile.');
+  const trackUris = await getRecommendedTracks(token, mood);
+  const { id: playlistId, url: playlistUrl } = await createNewPlaylist(token, me.id, mood, makePublic);
+  await addTracksToPlaylist(token, playlistId, trackUris);
+  return { name: `MoodPlayl.ist: ${mood.charAt(0).toUpperCase() + mood.slice(1)} Vibe`, url: playlistUrl, tracks: trackUris.length };
 }
