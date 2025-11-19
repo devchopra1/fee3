@@ -1,10 +1,10 @@
 // src/spotifyService.js
-// Defensive Spotify service wrapper — fixes URL-building issues that caused 404 on /recommendations
+// Defensive Spotify service wrapper — aggressive debug + encodeURI + Accept header
+// Replaces previous version. Copy entire file over src/spotifyService.js
 
 import { refreshAccessToken, clearAllTokens, getStoredAccessToken } from './spotifyAuth';
 
 let API_BASE_URL = "https://api.spotify.com/v1";
-// normalize API_BASE_URL (no trailing slash)
 API_BASE_URL = API_BASE_URL.replace(/\/+$/, '');
 
 const moodMap = {
@@ -17,20 +17,9 @@ const moodMap = {
 function buildFullUrl(url) {
   if (!url) return API_BASE_URL;
 
-  // If url already includes protocol, use it unchanged
   if (/^https?:\/\//i.test(url)) return url;
-
-  // If url starts with api.spotify.com (no protocol), add https://
-  if (/^api\.spotify\.com/i.test(url)) {
-    return 'https://' + url.replace(/^\/+/, '');
-  }
-
-  // If url starts with /, join with base
-  if (url.startsWith('/')) {
-    return API_BASE_URL + url;
-  }
-
-  // Otherwise assume it's a path like "recommendations?..." — ensure leading slash
+  if (/^api\.spotify\.com/i.test(url)) return 'https://' + url.replace(/^\/+/, '');
+  if (url.startsWith('/')) return API_BASE_URL + url;
   return API_BASE_URL + '/' + url;
 }
 
@@ -46,7 +35,6 @@ async function spotifyFetch(url, token, options = {}, retries = 0) {
     }
   }
 
-  // refresh shortly before expiry if necessary
   const expiry = localStorage.getItem('token_expiry');
   if (expiry && Date.now() > parseInt(expiry, 10) - 5000) {
     try {
@@ -58,23 +46,44 @@ async function spotifyFetch(url, token, options = {}, retries = 0) {
   }
 
   const fullUrl = buildFullUrl(url);
+  const encodedUrl = encodeURI(fullUrl);
+
   const finalOptions = {
     method: options.method || 'GET',
-    headers: { 'Authorization': `Bearer ${currentToken}`, 'Content-Type': 'application/json', ...(options.headers || {}) },
+    headers: { 
+      'Authorization': `Bearer ${currentToken}`, 
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      ...(options.headers || {}) 
+    },
     body: options.body
   };
 
-  // DEBUG: show the final URL so we can confirm it's correct
   console.debug('[spotifyFetch] FINAL URL ->', fullUrl);
+  console.debug('[spotifyFetch] ENCODED URL ->', encodedUrl);
+  if (finalOptions.body) {
+    try { console.debug('[spotifyFetch] REQ BODY ->', JSON.parse(finalOptions.body)); }
+    catch { console.debug('[spotifyFetch] REQ BODY (raw) ->', finalOptions.body); }
+  }
 
   let response;
   try {
-    response = await fetch(fullUrl, finalOptions);
+    // try encoded URL first (prevents accidental malformed URLs)
+    response = await fetch(encodedUrl, finalOptions);
   } catch (networkErr) {
+    // if network error, surface it
     console.error('[spotifyFetch] Network error:', networkErr);
     throw new Error('Network error while contacting Spotify API.');
   }
 
+  // read response body text for debugging (always)
+  let bodyText = null;
+  try { bodyText = await response.text(); } catch (e) { bodyText = null; }
+
+  // log the exact response text so we know what Spotify returned
+  console.debug('[spotifyFetch] RESPONSE TEXT ->', bodyText);
+
+  // If 401, try refresh once
   if (response.status === 401 && retries === 0) {
     try {
       const newToken = await refreshAccessToken();
@@ -85,36 +94,43 @@ async function spotifyFetch(url, token, options = {}, retries = 0) {
     }
   }
 
-  if (response.status === 204) return {};
-
-  let bodyText = null;
-  let bodyJson = null;
-  try {
-    bodyText = await response.text();
-    try { bodyJson = JSON.parse(bodyText); } catch (_) { bodyJson = null; }
-  } catch (e) {
-    /* ignore */
-  }
-
+  // If 404 or other not ok, do an extra diagnostic: try raw full URL (unencoded) once and log its response
   if (!response.ok) {
+    // Attempt a diagnostic fetch to compare encoded vs raw (only once)
+    try {
+      const rawResp = await fetch(fullUrl, finalOptions);
+      let rawBody = null;
+      try { rawBody = await rawResp.text(); } catch {}
+      console.debug('[spotifyFetch] DIAGNOSTIC RAW URL ->', fullUrl);
+      console.debug('[spotifyFetch] DIAGNOSTIC RAW RESPONSE ->', rawResp.status, rawBody);
+    } catch (diagErr) {
+      console.debug('[spotifyFetch] DIAGNOSTIC RAW FETCH FAILED ->', diagErr);
+    }
+
+    // Normalize response text to JSON if possible
+    let bodyJson = null;
+    try { bodyJson = JSON.parse(bodyText); } catch {}
+    // Log detailed error
     console.error(`[spotifyFetch] ERROR ${response.status} ${response.statusText} ->`, bodyJson || bodyText);
+
     if (response.status === 403) {
       clearAllTokens();
-      const msg = bodyJson?.error?.message || bodyText || 'Permission Denied (403)';
+      const msg = (bodyJson && (bodyJson.error?.message || bodyJson.error)) || bodyText || 'Permission Denied (403)';
       throw new Error(`Spotify 403: ${msg}`);
     }
     if (response.status === 404) {
-      const msg = bodyJson?.error?.message || bodyText || 'Not Found (404)';
+      const msg = (bodyJson && (bodyJson.error?.message || bodyJson.error)) || bodyText || 'Not Found (404)';
       throw new Error(`Spotify 404: ${msg}`);
     }
-    const generic = bodyJson?.error?.message || bodyText || response.statusText;
+    const generic = (bodyJson && (bodyJson.error?.message || bodyJson.error)) || bodyText || response.statusText;
     throw new Error(`Spotify API Error ${response.status}: ${generic}`);
   }
 
-  return bodyJson ?? (bodyText ? (() => { try { return JSON.parse(bodyText); } catch { return bodyText; } })() : {});
+  // success: return parsed JSON if possible
+  try { return bodyText ? JSON.parse(bodyText) : {}; } catch { return bodyText; }
 }
 
-/* ========== API ========== */
+/* ---------- API ---------- */
 
 export async function getCurrentUserId(token) {
   const profile = await spotifyFetch('/me', token);
@@ -141,7 +157,6 @@ export async function getRecommendedTracks(token, mood) {
 
   const params = buildRecommendationParams(targets, { limit: 25 });
   const url = `/recommendations?${params.toString()}`;
-  // Debug log before calling
   console.debug('[getRecommendedTracks] calling ->', url);
   const data = await spotifyFetch(url, token);
 
@@ -163,7 +178,6 @@ export async function addTracksToPlaylist(token, playlistId, trackUris) {
   if (!playlistId) throw new Error('playlistId required.');
   if (!Array.isArray(trackUris) || trackUris.length === 0) return;
 
-  // convert spotify:playlist:... -> id
   let id = playlistId;
   if (typeof id === 'string' && id.startsWith('spotify:playlist:')) id = id.split(':').pop();
 
