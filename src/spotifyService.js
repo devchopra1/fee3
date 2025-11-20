@@ -1,10 +1,11 @@
 // src/spotifyService.js
-// Robust, fallback-first Spotify service wrapper for MoodPlayl.ist
-// - Safe URL building (no double-encoding)
-// - Auto refresh token
-// - Try recommendations -> fallback to user's top tracks -> saved tracks -> built-in fallback list
-// - Create playlist via /me/playlists and add tracks in chunks of 100
-// - Optional debugCallback(request/response) for UI debug panel
+// Final updated Spotify service for MoodPlayl.ist
+// - recommendations-first (seed_artists -> seed_tracks -> seed_genres)
+// - automatic fallbacks to user's top tracks / saved tracks / static list
+// - safe URL building (no double-encoding)
+// - token auto-refresh, helpful error messages
+// - create playlist (private by default) and add tracks in chunks (100 max)
+// - optional debugCallback(stage, { request, response })
 
 import { refreshAccessToken, clearAllTokens, getStoredAccessToken } from './spotifyAuth';
 
@@ -18,7 +19,7 @@ const moodMap = {
   pumped:  { target_valence: 0.5,  target_energy: 0.95, target_danceability: 0.6, min_tempo: 140 },
 };
 
-// A small static fallback list (last resort). Replace or expand later if you want.
+// Final fallback list of URIs (used only if all else fails)
 const STATIC_FALLBACK_URIS = [
   "spotify:track:3n3Ppam7vgaVa1iaRUc9Lp",
   "spotify:track:7ouMYWpwJ422jRcDASZB7P",
@@ -35,13 +36,19 @@ function buildFullUrl(url) {
   return API_BASE_URL + '/' + url;
 }
 
-function safeParse(text) {
+function safeJSONParse(text) {
   try { return JSON.parse(text); } catch { return null; }
 }
 
 async function spotifyFetch(url, token, options = {}, retries = 0, debugCallback) {
+  // debug helper — non-blocking
   const pushDebug = (stage, req, resp) => {
-    try { if (typeof debugCallback === 'function') debugCallback({ stage, request: req, response: resp }); } catch {}
+    try {
+      if (typeof debugCallback === 'function') debugCallback({ stage, request: req, response: resp });
+    } catch (e) {
+      // ignore debug errors
+      console.warn('debugCallback failed', e);
+    }
   };
 
   let currentToken = token || getStoredAccessToken();
@@ -49,6 +56,7 @@ async function spotifyFetch(url, token, options = {}, retries = 0, debugCallback
     try { currentToken = await refreshAccessToken(); } catch (e) { clearAllTokens(); throw new Error('No access token available. Please sign in.'); }
   }
 
+  // refresh shortly before expiry
   const expiry = localStorage.getItem('token_expiry');
   if (expiry && Date.now() > parseInt(expiry, 10) - 5000) {
     try { currentToken = await refreshAccessToken(); } catch (e) { clearAllTokens(); throw new Error('Session expired. Please log in again.'); }
@@ -61,7 +69,7 @@ async function spotifyFetch(url, token, options = {}, retries = 0, debugCallback
       Authorization: `Bearer ${currentToken}`,
       'Content-Type': 'application/json',
       Accept: 'application/json',
-      ...(options.headers || {}),
+      ...(options.headers || {})
     },
     body: options.body ?? null
   };
@@ -72,7 +80,7 @@ async function spotifyFetch(url, token, options = {}, retries = 0, debugCallback
 
   let response;
   try {
-    // Important: DO NOT re-encode the fullUrl (URLSearchParams already encodes). Use fullUrl as-is.
+    // IMPORTANT: do not re-encode the URL (URLSearchParams already encodes). Use fullUrl as-is.
     response = await fetch(fullUrl, finalOptions);
   } catch (networkErr) {
     const respErr = { status: null, statusText: String(networkErr), bodyText: null, bodyJson: null };
@@ -83,11 +91,13 @@ async function spotifyFetch(url, token, options = {}, retries = 0, debugCallback
 
   let bodyText = null;
   try { bodyText = await response.text(); } catch {}
-  const bodyJson = safeParse(bodyText);
+  const bodyJson = safeJSONParse(bodyText);
   const respDebug = { status: response.status, statusText: response.statusText, bodyText, bodyJson };
   pushDebug('response:received', reqDebug, respDebug);
+
   console.debug('[spotifyFetch] RESPONSE TEXT ->', bodyText);
 
+  // 401: try refresh once
   if (response.status === 401 && retries === 0) {
     try {
       const newToken = await refreshAccessToken();
@@ -109,11 +119,12 @@ async function spotifyFetch(url, token, options = {}, retries = 0, debugCallback
     throw new Error(`Spotify API Error ${response.status}: ${msg}`);
   }
 
+  // success: return parsed json if possible
   if (bodyJson !== null) return bodyJson;
   try { return bodyText ? JSON.parse(bodyText) : {}; } catch { return bodyText; }
 }
 
-/* ========== Public API ========== */
+/* ---------- Public API ---------- */
 
 export async function getCurrentUserId(token, debugCallback) {
   const profile = await spotifyFetch('/me', token, {}, 0, debugCallback);
@@ -121,111 +132,109 @@ export async function getCurrentUserId(token, debugCallback) {
   return profile.id;
 }
 
-function buildRecommendationParams(targets = {}, extra = {}) {
-  const params = new URLSearchParams();
-  params.set('limit', String(extra.limit ?? 25));
-  // don't hardcode seed_genres here; the recommendation caller will set seeds
-  Object.entries(targets).forEach(([k, v]) => {
+/* Helper to build params object from targets */
+function applyTargetsToParams(params, targets) {
+  Object.entries(targets || {}).forEach(([k, v]) => {
     if (v !== undefined && v !== null && (typeof v === 'number' || typeof v === 'string')) {
       params.set(k, String(v));
     }
   });
-  return params;
 }
 
 /**
- * getRecommendedTracks(token, mood)
- * Strategy:
- * 1) Try recommendations (preferring seed_artists from user's top artists)
- * 2) If recommendations endpoint fails or returns empty -> fallback to user's top tracks
- * 3) If none -> fallback to user's saved tracks
- * 4) If still none -> use STATIC_FALLBACK_URIS
+ * Recommendations-first function:
+ * 1) Try /recommendations with seed_artists from user's top artists
+ * 2) Then try seed_tracks (user's top tracks)
+ * 3) Then try a small safe seed_genres list
+ * 4) If recommendations fail or return empty -> fallback to /me/top/tracks -> /me/tracks -> STATIC_FALLBACK_URIS
  */
 export async function getRecommendedTracks(token, mood, debugCallback) {
   if (!mood || typeof mood !== 'string') throw new Error('Mood required.');
   const targets = moodMap[mood.toLowerCase()];
   if (!targets) throw new Error(`Invalid mood: ${mood}`);
 
-  // 1) gather user's top artists (best seeds)
-  let topArtistIds = [];
-  try {
-    const topArtists = await spotifyFetch('/me/top/artists?limit=5', token, {}, 0, debugCallback);
-    if (topArtists && Array.isArray(topArtists.items) && topArtists.items.length) {
-      topArtistIds = topArtists.items.map(a => a.id).filter(Boolean).slice(0,5);
-    }
-  } catch (e) {
-    console.warn('Could not fetch top artists (non-fatal):', e?.message || e);
-  }
-
-  // Try recommendations using artist seeds if we have them
-  const tryRecommendations = async (seedParams) => {
+  // helper to call /recommendations with provided seed params (object)
+  const tryRecommendations = async (seedObj) => {
     try {
-      const params = buildRecommendationParams(targets, { limit: 25 });
-      Object.entries(seedParams).forEach(([k,v]) => { if (v) params.set(k, v); });
+      const params = new URLSearchParams();
+      params.set('limit', '25');
+      Object.entries(seedObj || {}).forEach(([k, v]) => { if (v) params.set(k, v); });
+      applyTargetsToParams(params, targets);
       const url = `/recommendations?${params.toString()}`;
-      console.debug('[getRecommendedTracks] Attempting recommendations ->', url);
+      console.debug('[getRecommendedTracks] requesting', url);
       const data = await spotifyFetch(url, token, {}, 0, debugCallback);
       if (data && Array.isArray(data.tracks) && data.tracks.length) {
         return data.tracks.map(t => t?.uri).filter(Boolean);
       }
       return null;
     } catch (err) {
-      console.warn('Recommendations attempt failed:', err?.message || err);
+      console.warn('recommendations request failed:', err?.message || err);
       return null;
     }
   };
 
-  // 1a: Try with seed_artists from /me/top/artists
-  if (topArtistIds.length) {
-    const res = await tryRecommendations({ seed_artists: topArtistIds.join(',') });
-    if (Array.isArray(res) && res.length) return res;
+  // 1) seed_artists from /me/top/artists
+  try {
+    const topArtists = await spotifyFetch('/me/top/artists?limit=5', token, {}, 0, debugCallback);
+    if (topArtists && Array.isArray(topArtists.items) && topArtists.items.length) {
+      const artistSeeds = topArtists.items.map(a => a.id).filter(Boolean).slice(0,5).join(',');
+      const res = await tryRecommendations({ seed_artists: artistSeeds });
+      if (Array.isArray(res) && res.length) return res;
+    }
+  } catch (e) {
+    console.warn('top artists fetch failed (non-fatal):', e?.message || e);
   }
 
-  // 1b: Try with user's top tracks as seed_tracks
+  // 2) seed_tracks from /me/top/tracks
   try {
     const topTracks = await spotifyFetch('/me/top/tracks?limit=5', token, {}, 0, debugCallback);
     if (topTracks && Array.isArray(topTracks.items) && topTracks.items.length) {
-      const ids = topTracks.items.map(t => t.id).filter(Boolean).slice(0,5);
-      if (ids.length) {
-        const res2 = await tryRecommendations({ seed_tracks: ids.join(',') });
-        if (Array.isArray(res2) && res2.length) return res2;
-      }
+      const trackSeeds = topTracks.items.map(t => t.id).filter(Boolean).slice(0,5).join(',');
+      const res2 = await tryRecommendations({ seed_tracks: trackSeeds });
+      if (Array.isArray(res2) && res2.length) return res2;
     }
   } catch (e) {
-    console.warn('Top-tracks based recommendation failed:', e?.message || e);
+    console.warn('top tracks fetch failed (non-fatal):', e?.message || e);
   }
 
-  // 2) If recommendations are failing or blocked (404 etc), fall back to returning user's own tracks:
-  // 2a) /me/top/tracks
+  // 3) Safe genre fallback
   try {
-    const topTracksAgain = await spotifyFetch('/me/top/tracks?limit=25', token, {}, 0, debugCallback);
-    if (topTracksAgain && Array.isArray(topTracksAgain.items) && topTracksAgain.items.length) {
-      return topTracksAgain.items.map(t => t?.uri).filter(Boolean);
+    const safeGenres = 'pop,rock,edm,chill';
+    const res3 = await tryRecommendations({ seed_genres: safeGenres });
+    if (Array.isArray(res3) && res3.length) return res3;
+  } catch (e) {
+    console.warn('genre-based recs attempt failed:', e?.message || e);
+  }
+
+  // 4) Fallbacks if /recommendations is blocked or returns empty:
+  // 4a: Try returning user's top tracks directly
+  try {
+    const fallbackTop = await spotifyFetch('/me/top/tracks?limit=25', token, {}, 0, debugCallback);
+    if (fallbackTop && Array.isArray(fallbackTop.items) && fallbackTop.items.length) {
+      return fallbackTop.items.map(t => t?.uri).filter(Boolean);
     }
   } catch (e) {
     console.warn('/me/top/tracks fallback failed:', e?.message || e);
   }
 
-  // 2b) /me/tracks (saved tracks)
+  // 4b: Try user's saved tracks (/me/tracks)
   try {
     const saved = await spotifyFetch('/me/tracks?limit=25', token, {}, 0, debugCallback);
     if (saved && Array.isArray(saved.items) && saved.items.length) {
-      // saved.items are { track: { uri } }
       return saved.items.map(i => i?.track?.uri).filter(Boolean);
     }
   } catch (e) {
     console.warn('/me/tracks fallback failed:', e?.message || e);
   }
 
-  // 3) Final fallback: built-in static URIs
-  console.warn('Using static fallback track URIs (final fallback).');
+  // 4c: Final static fallback
+  console.warn('Using static fallback URIs (final fallback).');
   return STATIC_FALLBACK_URIS.slice(0, 25);
 }
 
 /* ---------- Playlist helpers ---------- */
 
 export async function createNewPlaylist(token, userId, mood, isPublic = false, debugCallback) {
-  // Use /me/playlists for consistency
   const moodTitle = (typeof mood === 'string' && mood.length) ? mood.charAt(0).toUpperCase() + mood.slice(1) : 'Custom';
   const bodyObj = { name: `MoodPlayl.ist: ${moodTitle} Vibe`, description: 'Generated by MoodPlayl.ist', public: Boolean(isPublic) };
   const playlist = await spotifyFetch('/me/playlists', token, { method: 'POST', body: JSON.stringify(bodyObj) }, 0, debugCallback);
@@ -237,9 +246,11 @@ export async function addTracksToPlaylist(token, playlistId, trackUris, debugCal
   if (!playlistId) throw new Error('playlistId required.');
   if (!Array.isArray(trackUris) || trackUris.length === 0) return;
 
+  // Convert playlist URI -> id if needed
   let id = playlistId;
   if (typeof id === 'string' && id.startsWith('spotify:playlist:')) id = id.split(':').pop();
   const cleanedId = encodeURIComponent(String(id));
+
   const chunkSize = 100;
   for (let i = 0; i < trackUris.length; i += chunkSize) {
     const chunk = trackUris.slice(i, i + chunkSize);
@@ -248,15 +259,15 @@ export async function addTracksToPlaylist(token, playlistId, trackUris, debugCal
 }
 
 export async function generatePlaylist(token, mood, makePublic = false, debugCallback) {
-  // Validate user first (throws if token invalid)
+  // validate /me first
   const me = await spotifyFetch('/me', token, {}, 0, debugCallback);
   if (!me || !me.id) throw new Error('Unable to fetch user profile.');
 
-  // Get tracks (recommendations or fallbacks)
+  // get recommended tracks (recommendations-first)
   const trackUris = await getRecommendedTracks(token, mood, debugCallback);
   if (!Array.isArray(trackUris) || trackUris.length === 0) throw new Error('No tracks available to add.');
 
-  // Create playlist and add tracks
+  // create playlist and add tracks
   const { id: playlistId, url: playlistUrl } = await createNewPlaylist(token, me.id, mood, makePublic, debugCallback);
   await addTracksToPlaylist(token, playlistId, trackUris, debugCallback);
 
