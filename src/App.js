@@ -78,7 +78,7 @@ function App() {
   return (
     <div className="app-container">
       <header className="header">
-        <h1>MoodPlayl.ist Generator</h1>
+        <h1>MoodPlaylist Generator</h1>
 
         {accessToken && (
           <button
